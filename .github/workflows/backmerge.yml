@@ -1,0 +1,82 @@
+name: Backmerge
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backmerge:
+    name: Backmerge to Develop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get tag name
+        id: tag
+        run: echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Check if develop branch exists
+        run: |
+          git fetch origin develop:origin/develop || echo "develop branch does not exist yet"
+
+      - name: Create or update backmerge PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: "chore: backmerge release ${{ steps.tag.outputs.name }} to develop"
+          PR_BODY: |
+            Automated backmerge of release ${{ steps.tag.outputs.name }} from main to develop.
+
+            This PR was created automatically by the Backmerge workflow.
+        run: |
+          BRANCH_EXISTS=$(git ls-remote --heads origin develop | wc -l)
+
+          if [ "$BRANCH_EXISTS" -eq 0 ]; then
+            echo "Develop branch does not exist, creating it from main"
+            git checkout -b develop origin/main
+            git push origin develop
+            echo "Created develop branch from main"
+            exit 0
+          fi
+
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list \
+            --base develop \
+            --head main \
+            --state open \
+            --json title,number \
+            --jq '.[] | select(.title | startswith("chore: backmerge")) | .number')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Backmerge PR already exists: #$EXISTING_PR"
+            exit 0
+          fi
+
+          # Create backmerge branch
+          git checkout -b backmerge/${{ steps.tag.outputs.name }}-to-develop main
+
+          # Merge develop into backmerge branch to get latest develop
+          git merge origin/develop --no-edit --no-ff
+
+          # Push backmerge branch
+          git push origin backmerge/${{ steps.tag.outputs.name }}-to-develop --force
+
+          # Create PR
+          gh pr create \
+            --base develop \
+            --head backmerge/${{ steps.tag.outputs.name }}-to-develop \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --label "backmerge,automated"
